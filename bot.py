@@ -1,97 +1,97 @@
 import os
-import websocket
 import json
-import threading
 import time
+import threading
 import requests
+import websocket
 
-# ====== Переменные окружения ======
 TOKEN = os.environ.get("TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-# ====== Настройки ======
-THRESHOLD = 5           # % изменения для сигнала
-CHECK_INTERVAL = 1      # интервал проверки (сек)
-PUMP_EMOJI = "🟩"
-DUMP_EMOJI = "🟥"
+THRESHOLD = 5  # процент изменения
+PUMP = "🟩"
+DUMP = "🟥"
 
-# ====== Хранилище последних цен ======
 last_prices = {}
 
-# ====== Отправка сообщений в Telegram ======
+# ---------- Telegram ----------
 def send_message(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
     try:
-        requests.post(url, data=payload, timeout=10)
-    except requests.exceptions.RequestException as e:
-        print("Ошибка отправки сообщения:", e)
+        requests.post(url, data={"chat_id": CHAT_ID, "text": text}, timeout=10)
+    except Exception as e:
+        print("Ошибка Telegram:", e)
 
-# ====== Обработка каждого нового сообщения с WebSocket ======
+# ---------- WebSocket ----------
 def on_message(ws, message):
     global last_prices
+
     try:
         data = json.loads(message)
+
+        if "topic" not in data:
+            return
+
         if "data" not in data:
             return
 
-        pump_list = []
-        dump_list = []
+        symbol = data["data"]["symbol"]
+        price = float(data["data"]["lastPrice"])
 
-        for coin in data["data"]:
-            symbol = coin["symbol"]
-            price = float(coin["last_price"])
+        if symbol not in last_prices:
+            last_prices[symbol] = price
+            return
 
-            if symbol not in last_prices:
-                last_prices[symbol] = price
-                continue
+        base = last_prices[symbol]
+        change = (price - base) / base * 100
 
-            base_price = last_prices[symbol]
-            change_percent = (price - base_price) / base_price * 100
+        if abs(change) >= THRESHOLD:
+            if change > 0:
+                msg = f"{PUMP} {symbol} +{round(change,2)}%"
+            else:
+                msg = f"{DUMP} {symbol} {round(change,2)}%"
 
-            if abs(change_percent) >= THRESHOLD:
-                if change_percent > 0:
-                    pump_list.append(f"{PUMP_EMOJI} {symbol} +{round(change_percent,2)}%")
-                else:
-                    dump_list.append(f"{DUMP_EMOJI} {symbol} {round(change_percent,2)}%")
-                last_prices[symbol] = price
-
-        if pump_list or dump_list:
-            message_text = ""
-            if pump_list:
-                message_text += "\n".join(pump_list) + "\n"
-            if dump_list:
-                message_text += "\n".join(dump_list)
-            send_message(message_text)
+            send_message(msg)
+            last_prices[symbol] = price
 
     except Exception as e:
-        print("Ошибка обработки сообщения:", e)
+        print("Ошибка обработки:", e)
+
 
 def on_error(ws, error):
     print("WebSocket ошибка:", error)
 
-def on_close(ws):
-    print("WebSocket закрыт")
+
+def on_close(ws, close_status_code, close_msg):
+    print("WebSocket закрыт. Переподключение через 5 секунд...")
+    time.sleep(5)
+    start_ws()
+
 
 def on_open(ws):
     print("WebSocket подключен")
-    # Подписка на все тикеры линейной категории
-    subscribe = {"op": "subscribe", "args": ["tickers.BTCUSDT", "tickers/ETHUSDT", "tickers/ALL"]}  
-    ws.send(json.dumps(subscribe))
 
-# ====== Запуск WebSocket в отдельном потоке ======
+    subscribe_message = {
+        "op": "subscribe",
+        "args": ["tickers"]
+    }
+
+    ws.send(json.dumps(subscribe_message))
+
+
 def start_ws():
     ws = websocket.WebSocketApp(
-        "wss://stream.bybit.com/realtime_public",
+        "wss://stream.bybit.com/v5/public/linear",
         on_open=on_open,
         on_message=on_message,
         on_error=on_error,
         on_close=on_close
     )
-    ws.run_forever()
 
+    ws.run_forever(ping_interval=20, ping_timeout=10)
+
+
+# ---------- START ----------
 if __name__ == "__main__":
     print("Бот запущен...")
-    threading.Thread(target=start_ws).start()
-    while True:
-        time.sleep(10)  # главный поток спит, WebSocket работает
+    start_ws()
