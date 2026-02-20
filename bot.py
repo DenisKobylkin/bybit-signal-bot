@@ -27,17 +27,23 @@ def send_telegram(message):
 
 # ================= SYMBOLS ===================
 def get_symbols():
+    url = "https://api.bybit.com/v5/market/instruments-info?category=linear"
     try:
-        url = "https://api.bybit.com/v5/market/instruments-info?category=linear"
-        resp = requests.get(url).json()
-        symbols = [item["symbol"] for item in resp["result"]["list"] if item["status"]=="Trading"]
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            print(f"Ошибка HTTP: {resp.status_code} | {resp.text}")
+            return []
+        data = resp.json()
+        if "result" not in data or "list" not in data["result"]:
+            print(f"Неверный формат ответа: {data}")
+            return []
+        symbols = [item["symbol"] for item in data["result"]["list"] if item["status"]=="Trading"]
         print(f"Получено {len(symbols)} торговых пар")
         return symbols
     except Exception as e:
         print("Ошибка получения списка монет:", e)
         return []
 
-SYMBOLS = get_symbols()
 
 # ================= PRICE LOGIC ===============
 def process_price(symbol, price):
