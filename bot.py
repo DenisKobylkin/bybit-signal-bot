@@ -1,69 +1,62 @@
+import os
 import json
 import time
 import threading
-import os
 import requests
 import websocket
 from flask import Flask
 
-# ================= НАСТРОЙКИ =================
+# ================= CONFIG =================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 SYMBOL = "BTCUSDT"
-THRESHOLD_PERCENT = 5          # процент изменения
-WINDOW_SECONDS = 300           # окно анализа (5 минут)
-CHECK_INTERVAL = 1             # проверка каждую секунду
-
-# ============================================
+THRESHOLD_PERCENT = 5
+WINDOW_SECONDS = 300
 
 price_history = []
 last_alert_time = 0
 
-# ================= TELEGRAM ==================
+# ================= TELEGRAM =================
 
 def send_telegram(message):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": CHAT_ID,
-        "text": message
-    }
-    try:
-        requests.post(url, data=data, timeout=10)
-    except Exception as e:
-        print("Ошибка отправки в Telegram:", e)
+    if not BOT_TOKEN or not CHAT_ID:
+        print("TOKEN or CHAT_ID not set")
+        return
 
-# ================= PRICE LOGIC ===============
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    data = {"chat_id": CHAT_ID, "text": message}
+
+    try:
+        response = requests.post(url, data=data, timeout=10)
+        print("Telegram:", response.text)
+    except Exception as e:
+        print("Telegram error:", e)
+
+# ================= PRICE LOGIC =================
 
 def process_price(price):
     global price_history, last_alert_time
 
-    current_time = time.time()
-    price_history.append((current_time, price))
+    now = time.time()
+    price_history.append((now, price))
 
-    # Удаляем старые данные
-    price_history = [
-        (t, p) for t, p in price_history
-        if current_time - t <= WINDOW_SECONDS
-    ]
+    # удаляем старые данные
+    price_history[:] = [(t, p) for t, p in price_history if now - t <= WINDOW_SECONDS]
 
     if len(price_history) < 2:
         return
 
     old_price = price_history[0][1]
-    percent_change = ((price - old_price) / old_price) * 100
+    change = ((price - old_price) / old_price) * 100
 
-    if abs(percent_change) >= THRESHOLD_PERCENT:
-        if current_time - last_alert_time > WINDOW_SECONDS:
-            direction = "📈 Рост" if percent_change > 0 else "📉 Падение"
-            message = (
-                f"{direction} {SYMBOL}\n"
-                f"Изменение: {percent_change:.2f}%\n"
-                f"Текущая цена: {price}"
-            )
-            send_telegram(message)
-            last_alert_time = current_time
+    if abs(change) >= THRESHOLD_PERCENT:
+        if now - last_alert_time > WINDOW_SECONDS:
+            direction = "🟢 PUMP" if change > 0 else "🔴 DUMP"
+            msg = f"{direction} {SYMBOL}\nИзменение: {change:.2f}%\nЦена: {price}"
+            send_telegram(msg)
+            last_alert_time = now
 
 # ================= WEBSOCKET =================
 
@@ -73,40 +66,35 @@ def on_message(ws, message):
 
         if "data" in data and isinstance(data["data"], list):
             ticker = data["data"][0]
-            price = float(ticker["lastPrice"])
-            process_price(price)
+            if "lastPrice" in ticker:
+                price = float(ticker["lastPrice"])
+                process_price(price)
 
     except Exception as e:
-        print("Ошибка обработки сообщения:", e)
-
-
-def on_error(ws, error):
-    print("WebSocket ошибка:", error)
-
-def on_close(ws, close_status_code, close_msg):
-    print("WebSocket закрыт. Переподключение через 5 сек...")
-    time.sleep(5)
-    start_websocket()
+        print("Message error:", e)
 
 def on_open(ws):
-    print("WebSocket подключен")
-    subscribe_message = {
+    print("WebSocket connected")
+    sub = {
         "op": "subscribe",
         "args": [f"tickers.{SYMBOL}"]
     }
-    ws.send(json.dumps(subscribe_message))
+    ws.send(json.dumps(sub))
 
-def start_websocket():
-    ws = websocket.WebSocketApp(
-        "wss://stream.bybit.com/v5/public/linear",
-        on_open=on_open,
-        on_message=on_message,
-        on_error=on_error,
-        on_close=on_close
-    )
-    ws.run_forever()
+def start_ws():
+    while True:
+        try:
+            ws = websocket.WebSocketApp(
+                "wss://stream.bybit.com/v5/public/linear",
+                on_open=on_open,
+                on_message=on_message
+            )
+            ws.run_forever()
+        except Exception as e:
+            print("WebSocket restart:", e)
+            time.sleep(5)
 
-# ================= FLASK =====================
+# ================= FLASK =================
 
 app = Flask(__name__)
 
@@ -118,20 +106,12 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# ================= MAIN ======================
+# ================= MAIN =================
 
 if __name__ == "__main__":
-    print("Бот запущен")
+    print("Bot started")
+    send_telegram("🟢 Бот запущен и работает")
 
-    print("TOKEN:", BOT_TOKEN)
-    print("CHAT_ID:", CHAT_ID)
+    threading.Thread(target=start_ws, daemon=True).start()
 
-    send_telegram("🟢 Бот успешно запущен и готов к работе")
-
-    # Запускаем Flask в отдельном потоке
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-
-    # Запускаем WebSocket
-    start_websocket()
+    run_flask()
