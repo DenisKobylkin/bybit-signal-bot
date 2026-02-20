@@ -119,6 +119,8 @@ def run_flask():
 if __name__ == "__main__":
     print("Бот запущен")
 
+    send_telegram("🟢 Бот успешно запущен и готов к работе")
+
     # Запускаем Flask в отдельном потоке
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
