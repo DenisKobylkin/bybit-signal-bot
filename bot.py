@@ -12,7 +12,7 @@ BOT_TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 SYMBOL = "BTCUSDT"
-THRESHOLD_PERCENT = 5
+THRESHOLD_PERCENT = 0.01
 WINDOW_SECONDS = 300
 
 price_history = []
