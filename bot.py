@@ -15,6 +15,8 @@ THRESHOLD_PERCENT = 5  # % изменения для сигнала
 # Временные данные
 price_history = {}  # {symbol: last_price}
 last_alert = {}     # {symbol: last_alert_price}
+SYMBOLS = []
+
 
 # ================= TELEGRAM ==================
 def send_telegram(message):
@@ -80,8 +82,10 @@ def on_close(ws, close_status_code, close_msg):
 
 def on_open(ws):
     print("WebSocket подключен")
-    args = [f"tickers.{symbol}" for symbol in SYMBOLS]
-    subscribe_message = {"op": "subscribe", "args": args}
+    subscribe_message = {
+        "op": "subscribe",
+        "args": [f"tickers.{symbol}" for symbol in SYMBOLS]
+    }
     ws.send(json.dumps(subscribe_message))
 
 def start_websocket():
@@ -107,11 +111,13 @@ def run_flask():
 
 # ================= MAIN =====================
 if __name__ == "__main__":
-    if not TOKEN or not CHAT_ID:
-        print("Ошибка: TOKEN или CHAT_ID не заданы")
-        exit(1)
-
     print("Бот запущен")
+
+    # Получаем список всех монет
+    SYMBOLS = get_symbols()
+    if not SYMBOLS:
+        print("Не удалось получить список монет. Программа завершена.")
+        exit(1)
 
     # Запускаем Flask в отдельном потоке
     flask_thread = threading.Thread(target=run_flask)
@@ -119,4 +125,4 @@ if __name__ == "__main__":
     flask_thread.start()
 
     # Запускаем WebSocket
-    start_websocket()
+    start_websocket()    
