@@ -8,13 +8,13 @@ from flask import Flask
 
 # ================= НАСТРОЙКИ =================
 
-BOT_TOKEN = os.getenv("TOKEN")       # На Railway установлен TOKEN
-CHAT_ID = os.getenv("CHAT_ID")
+BOT_TOKEN = os.getenv("TOKEN")       # TOKEN из Railway
+CHAT_ID = os.getenv("CHAT_ID")       # CHAT_ID для Telegram
 
-# Список монет (в примере три, остальные можно добавить вручную)
+# Список монет вручную (добавляй свои)
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "RPLUSDT", "SOL", "XRP", "ENSO", "AZTEC", "HYPE", "DOGE", "MYX", "1000PEPE", "XAUT", "RIVER", "OP", "INJ", "AXS", "ORCA", "SUI", "ADA", "PIPPIN", "RAVE", "BIO", "BCH", "BNB", "VVV", "FARTCOIN", "ZEC", "ARB", "TAO", "LINK", "ENA"]
 
-THRESHOLD_PERCENT = 5          # процент изменения для сигнала
+THRESHOLD_PERCENT = 5          # процент изменения
 WINDOW_SECONDS = 300           # окно анализа (5 минут)
 CHECK_INTERVAL = 1             # проверка каждую секунду
 
@@ -36,11 +36,10 @@ def send_telegram(message):
     except Exception as e:
         print("Ошибка отправки в Telegram:", e)
 
-# ================= PRICE LOGIC ===============
+# ================= PRICE LOGIC ================
 
 def process_price(symbol, price):
     global price_history, last_alert_time
-
     current_time = time.time()
     price_history[symbol].append((current_time, price))
 
@@ -67,17 +66,16 @@ def process_price(symbol, price):
             send_telegram(message)
             last_alert_time[symbol] = current_time
 
-# ================= WEBSOCKET =================
+# ================= WEBSOCKET ==================
 
 def on_message(ws, message):
     try:
         data = json.loads(message)
         if "data" in data:
-            for ticker in data["data"]:
-                symbol = ticker["symbol"]
-                if symbol in SYMBOLS:
-                    price = float(ticker["lastPrice"])
-                    process_price(symbol, price)
+            symbol = data["data"]["s"]
+            price = float(data["data"]["p"])
+            if symbol in SYMBOLS:
+                process_price(symbol, price)
     except Exception as e:
         print("Ошибка обработки сообщения:", e)
 
@@ -91,7 +89,6 @@ def on_close(ws, close_status_code, close_msg):
 
 def on_open(ws):
     print("WebSocket подключен")
-    # Подписка на несколько монет
     subscribe_message = {
         "op": "subscribe",
         "args": [f"tickers.{symbol}" for symbol in SYMBOLS]
@@ -107,25 +104,6 @@ def start_websocket():
         on_close=on_close
     )
     ws.run_forever()
-
-    # ================= BYBIT COINS =================
-def get_all_symbols():
-    try:
-        url = "https://api.bybit.com/v2/public/symbols"
-        response = requests.get(url, timeout=10)
-        data = response.json()
-        if "result" in data:
-            symbols = [item["name"] for item in data["result"]]
-            print("Все доступные пары на Bybit:")
-            print(symbols)
-            return symbols
-        else:
-            print("Ошибка получения списка монет:", data)
-            return []
-    except Exception as e:
-        print("Ошибка получения списка монет:", e)
-        return []
-
 
 # ================= FLASK =====================
 
@@ -144,13 +122,10 @@ def run_flask():
 if __name__ == "__main__":
     print("Бот запущен")
 
-    # Получаем все монеты и выводим в терминал
-    all_symbols = get_all_symbols()
-
-    # Flask держит контейнер живым
+    # Запускаем Flask в отдельном потоке
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
 
-    # Запуск WebSocket (можно пока оставить только на BTCUSDT или других вручную)
+    # Запускаем WebSocket
     start_websocket()
