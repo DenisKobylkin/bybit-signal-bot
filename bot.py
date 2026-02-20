@@ -1,86 +1,108 @@
-import os
+import json
 import time
-import requests
 import threading
+import os
+import requests
+import websocket
 
 # ================= НАСТРОЙКИ =================
-BOT_TOKEN = os.getenv("TOKEN")  # на Railway у тебя TOKEN
-CHAT_ID = os.getenv("CHAT_ID")  # shared variable
 
-# Список монет (USDT-пары) — добавь остальные вручную
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "RPLUSDT", "SOL", "XRP", "ENSO", "AZTEC", "HYPE", "DOGE", "MYX", "1000PEPE", "XAUT", "RIVER", "OP", "INJ", "AXS", "ORCA", "SUI", "ADA", "PIPPIN", "RAVE", "BIO", "BCH", "BNB", "VVV", "FARTCOIN", "ZEC", "ARB", "TAO", "LINK", "ENA"]
+BOT_TOKEN = os.getenv("TOKEN")     # твой токен Telegram
+CHAT_ID = os.getenv("CHAT_ID")     # ID чата Telegram
 
-THRESHOLD_PERCENT = 5          # процент изменения для сигнала
-CHECK_INTERVAL = 5             # проверка каждые N секунд
+# Список монет (добавь сюда вручную остальные)
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "RPLUSDT"]
+
+THRESHOLD_PERCENT = 5   # процент изменения для сигнала
+WINDOW_SECONDS = 300    # окно анализа (5 минут)
 
 # ============================================
 
-last_prices = {}
-last_alert_time = {}
+price_history = {symbol: [] for symbol in SYMBOLS}
+last_alert_time = {symbol: 0 for symbol in SYMBOLS}
 
 # ================= TELEGRAM ==================
+
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": CHAT_ID,
-        "text": message
-    }
+    data = {"chat_id": CHAT_ID, "text": message}
     try:
         requests.post(url, data=data, timeout=10)
     except Exception as e:
         print("Ошибка отправки в Telegram:", e)
 
 # ================= PRICE LOGIC ===============
-def check_prices():
-    global last_prices, last_alert_time
 
+def process_price(symbol, price):
+    global price_history, last_alert_time
+    current_time = time.time()
+    price_history[symbol].append((current_time, price))
+
+    # Оставляем только данные за последние WINDOW_SECONDS
+    price_history[symbol] = [
+        (t, p) for t, p in price_history[symbol]
+        if current_time - t <= WINDOW_SECONDS
+    ]
+
+    if len(price_history[symbol]) < 2:
+        return
+
+    old_price = price_history[symbol][0][1]
+    percent_change = ((price - old_price) / old_price) * 100
+
+    if abs(percent_change) >= THRESHOLD_PERCENT:
+        if current_time - last_alert_time[symbol] > WINDOW_SECONDS:
+            direction = "📈 Рост" if percent_change > 0 else "📉 Падение"
+            message = (
+                f"{direction} {symbol}\n"
+                f"Изменение: {percent_change:.2f}%\n"
+                f"Текущая цена: {price}"
+            )
+            send_telegram(message)
+            last_alert_time[symbol] = current_time
+
+# ================= WEBSOCKET =================
+
+def on_message(ws, message):
     try:
-        for symbol in SYMBOLS:
-            url = f"https://api.bybit.com/v2/public/tickers?symbol={symbol}"
-            response = requests.get(url, timeout=10)
-            data = response.json()
-
-            if "result" not in data or not data["result"]:
-                print(f"Нет данных по {symbol}")
-                continue
-
-            current_price = float(data["result"][0]["last_price"])
-
-            # Если раньше не было цены — просто сохраняем
-            if symbol not in last_prices:
-                last_prices[symbol] = current_price
-                last_alert_time[symbol] = 0
-                continue
-
-            old_price = last_prices[symbol]
-            percent_change = ((current_price - old_price) / old_price) * 100
-
-            if abs(percent_change) >= THRESHOLD_PERCENT:
-                now = time.time()
-                if now - last_alert_time[symbol] > 300:  # 5 минут между сигналами
-                    direction = "📈 Рост" if percent_change > 0 else "📉 Падение"
-                    message = (
-                        f"{direction} {symbol}\n"
-                        f"Изменение: {percent_change:.2f}%\n"
-                        f"Текущая цена: {current_price}\n"
-                        f"https://www.bybit.com/trade/usdt/{symbol}?ref=NBMDNGN"
-                    )
-                    send_telegram(message)
-                    last_alert_time[symbol] = now
-
-            last_prices[symbol] = current_price
-
+        data = json.loads(message)
+        if "data" in data:
+            symbol = data["data"]["s"]
+            if symbol in SYMBOLS:
+                price = float(data["data"]["p"])
+                process_price(symbol, price)
     except Exception as e:
-        print("Ошибка при получении цен:", e)
+        print("Ошибка обработки сообщения:", e)
 
-def main_loop():
-    print("Бот запущен (REST Bybit)")
-    send_telegram("Бот запущен и работает (REST Bybit)")
+def on_error(ws, error):
+    print("WebSocket ошибка:", error)
 
-    while True:
-        check_prices()
-        time.sleep(CHECK_INTERVAL)
+def on_close(ws, close_status_code, close_msg):
+    print("WebSocket закрыт. Переподключение через 5 сек...")
+    time.sleep(5)
+    start_websocket()
+
+def on_open(ws):
+    print("WebSocket подключен")
+    subscribe_message = {
+        "op": "subscribe",
+        "args": [f"tickers.{symbol}" for symbol in SYMBOLS]
+    }
+    ws.send(json.dumps(subscribe_message))
+
+def start_websocket():
+    ws = websocket.WebSocketApp(
+        "wss://stream.bybit.com/v5/public/quote",
+        on_open=on_open,
+        on_message=on_message,
+        on_error=on_error,
+        on_close=on_close
+    )
+    ws.run_forever()
 
 # ================= MAIN ======================
+
 if __name__ == "__main__":
-    main_loop()
+    print("Бот запущен")
+    # Запускаем WebSocket
+    start_websocket()
