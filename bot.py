@@ -70,11 +70,15 @@ def process_price(price):
 def on_message(ws, message):
     try:
         data = json.loads(message)
-        if "data" in data:
-            price = float(data["data"]["lastPrice"])
+
+        if "data" in data and isinstance(data["data"], list):
+            ticker = data["data"][0]
+            price = float(ticker["lastPrice"])
             process_price(price)
+
     except Exception as e:
         print("Ошибка обработки сообщения:", e)
+
 
 def on_error(ws, error):
     print("WebSocket ошибка:", error)
