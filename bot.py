@@ -1,128 +1,96 @@
-import os
-import json
 import time
-import threading
+import os
 import requests
-import websocket
 from flask import Flask
 
-# ================= НАСТРОЙКИ =================
-TOKEN = os.getenv("TOKEN")
+# ====== Настройки ======
+BOT_TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-THRESHOLD_PERCENT = 5  # % изменения для сигнала
+THRESHOLD_PERCENT = 5   # порог изменения для сигнала
+CHECK_INTERVAL = 10     # каждые 10 секунд проверяем
 
-# Временные данные
-price_history = {}  # {symbol: last_price}
-last_alert = {}     # {symbol: last_alert_price}
-SYMBOLS = []
+prices = {}             # последний известный ценник
 
-
-# ================= TELEGRAM ==================
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": message}
+# ====== Telegram ======
+def send_telegram(text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text}
     try:
-        requests.post(url, data=data, timeout=10)
+        requests.post(url, data=payload, timeout=10)
     except Exception as e:
-        print("Ошибка отправки в Telegram:", e)
+        print("Ошибка Telegram:", e)
 
-# ================= SYMBOLS ===================
-def get_symbols():
-    url = "https://api.bybit.com/v5/market/instruments-info?category=linear"
+# ====== CoinGecko API ======
+def get_all_coins():
+    url = "https://api.coingecko.com/api/v3/coins/list"
     try:
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200:
-            print(f"Ошибка HTTP: {resp.status_code} | {resp.text}")
-            return []
-        data = resp.json()
-        if "result" not in data or "list" not in data["result"]:
-            print(f"Неверный формат ответа: {data}")
-            return []
-        symbols = [item["symbol"] for item in data["result"]["list"] if item["status"]=="Trading"]
-        print(f"Получено {len(symbols)} торговых пар")
-        return symbols
-    except Exception as e:
-        print("Ошибка получения списка монет:", e)
+        r = requests.get(url, timeout=10)
+        return r.json()
+    except:
         return []
 
-
-# ================= PRICE LOGIC ===============
-def process_price(symbol, price):
-    price_history.setdefault(symbol, price)
-    last = last_alert.get(symbol, price)
-    change_percent = ((price - last) / last) * 100
-
-    if abs(change_percent) >= THRESHOLD_PERCENT:
-        # Формируем список Pump/Dump для сообщения
-        direction = "Pump" if change_percent > 0 else "Dump"
-        color = "🟩" if change_percent > 0 else "🟥"
-        message = f"{color} {direction} {symbol} — {price:.4f} ({change_percent:.2f}%)"
-        send_telegram(message)
-        last_alert[symbol] = price
-
-# ================= WEBSOCKET =================
-def on_message(ws, message):
-    try:
-        data = json.loads(message)
-        if "data" in data:
-            price = float(data["data"]["lastPrice"])
-            symbol = data["data"]["symbol"]
-            process_price(symbol, price)
-    except Exception as e:
-        print("Ошибка обработки сообщения:", e)
-
-def on_error(ws, error):
-    print("WebSocket ошибка:", error)
-
-def on_close(ws, close_status_code, close_msg):
-    print("WebSocket закрыт. Переподключение через 5 сек...")
-    time.sleep(5)
-    start_websocket()
-
-def on_open(ws):
-    print("WebSocket подключен")
-    subscribe_message = {
-        "op": "subscribe",
-        "args": [f"tickers.{symbol}" for symbol in SYMBOLS]
+def get_price(ids):
+    url = "https://api.coingecko.com/api/v3/simple/price"
+    params = {
+        "ids": ",".join(ids),
+        "vs_currencies": "usd"
     }
-    ws.send(json.dumps(subscribe_message))
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        return r.json()
+    except:
+        return {}
 
-def start_websocket():
-    ws = websocket.WebSocketApp(
-        "wss://stream.bybit.com/v5/public/linear",
-        on_open=on_open,
-        on_message=on_message,
-        on_error=on_error,
-        on_close=on_close
-    )
-    ws.run_forever()
+# ====== Главный цикл ======
+def main_loop():
+    global prices
+    coins = get_all_coins()
 
-# ================= FLASK =====================
+    # берем только ограниченное количество (например первые 200)
+    ids = [coin["id"] for coin in coins][:200]
+
+    while True:
+        current_prices = get_price(ids)
+
+        pump_list = []
+        dump_list = []
+
+        for coin_id in ids:
+            if coin_id not in current_prices:
+                continue
+
+            price_now = current_prices[coin_id]["usd"]
+            old = prices.get(coin_id, price_now)
+            change = ((price_now - old) / old) * 100
+
+            if abs(change) >= THRESHOLD_PERCENT:
+                direction = "📈 Рост" if change > 0 else "📉 Падение"
+                if change > 0:
+                    pump_list.append(f"🟩 {coin_id} +{change:.2f}%")
+                else:
+                    dump_list.append(f"🟥 {coin_id} {change:.2f}%")
+                prices[coin_id] = price_now
+
+        if pump_list or dump_list:
+            message = ""
+            if pump_list:
+                message += "📊 Pump:\n" + "\n".join(pump_list) + "\n\n"
+            if dump_list:
+                message += "📉 Dump:\n" + "\n".join(dump_list)
+            send_telegram(message)
+
+        time.sleep(CHECK_INTERVAL)
+
+# ====== Flask для Railway ======
 app = Flask(__name__)
-
 @app.route("/")
 def home():
-    return "Bot is running 24/7 🚀"
+    return "Bot is running - CoinGecko version"
 
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
-
-# ================= MAIN =====================
 if __name__ == "__main__":
-    print("Бот запущен")
+    print("Запуск бота")
+    send_telegram("🟢 Бот запущен (CoinGecko версия)")
 
-    # Получаем список всех монет
-    SYMBOLS = get_symbols()
-    if not SYMBOLS:
-        print("Не удалось получить список монет. Программа завершена.")
-        exit(1)
-
-    # Запускаем Flask в отдельном потоке
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-
-    # Запускаем WebSocket
-    start_websocket()    
+    # на Railway просто запускаем цикл
+    main_loop()
